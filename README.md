@@ -1,4 +1,5 @@
 # Robot Vision Demo (Webcam) — Face Auth (VGG16+PCA), Person (MobileNet-SSD), Hand (MediaPipe)
+Chạy file test.py và file ArcFace+cosine.py nha 2 file đang chay đc
 
 This is a **webcam** demo that mirrors the paper's perception stack:
 - **Face Auth**: VGG16 used as a **feature extractor** on cropped faces + **PCA** (and a small KNN) for admin identity.
