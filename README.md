@@ -1,15 +1,27 @@
-# Robot Vision Demo (Webcam) — Face Auth (VGG16+PCA), Person (MobileNet-SSD), Hand (MediaPipe)
-Chạy file test.py và file ArcFace+cosine.py nha 2 file đang chay đc
+# main_v2.py — Hướng dẫn sử dụng & tối ưu
 
-This is a **webcam** demo that mirrors the paper's perception stack:
-- **Face Auth**: VGG16 used as a **feature extractor** on cropped faces + **PCA** (and a small KNN) for admin identity.
-  - In the paper, VGG16 did detection + PCA identity. For a quick webcam test, we keep the **auth idea** (VGG16+PCA) but use a standard face **detector** (OpenCV Res10 SSD) to crop faces.
-- **Person Detection**: **MobileNet-SSD (Caffe)**, keep **class=person**.
-- **Hand**: **MediaPipe Hands** with a simple finger-count gesture mapper to discrete commands (START/STOP/LEFT/RIGHT/FORWARD/BACKWARD) like the paper.
+README này mô tả cách chuẩn bị môi trường, convert MobileNetV2 sang ONNX, enroll dữ liệu, chạy nhận dạng, và *chỉnh các thông số trực tiếp trong code* (không cần truyền cờ `--`), theo đúng bản `main_v2.py` bạn đang dùng.
 
-> This matches the *spirit* and the **modules** used in the paper, adapted for a fast local demo on a PC webcam (no depth).
+> **Tóm tắt chạy nhanh**
+> ```bash
+> # 1) Convert MobileNetV2 sang ONNX (một lần)
+> python - <<'PY'
+> import tf2onnx, tensorflow as tf
+> from tensorflow.keras.applications import MobileNetV2
+> m = MobileNetV2(weights="imagenet", include_top=False, pooling="avg", input_shape=(224,224,3))
+> spec = (tf.TensorSpec((None,224,224,3), tf.float32, name="input"),)
+> model_proto, _ = tf2onnx.convert.from_keras(m, input_signature=spec, opset=13, output_path="mb2_gap.onnx")
+> PY
+>
+> # 2) Enroll (tạo dữ liệu nhận dạng)
+> python main_v2.py --enroll --label admin
+>
+> # 3) Chạy thường (không cần truyền các cờ tối ưu)
+> python main_v2.py
+> ```
 
-## 1) Setup
+---
+## 0) 
 
 **Python 3.9+** recommended. Create a venv and install deps:
 ```bash
@@ -32,52 +44,184 @@ pip install -r requirements.txt
 
 Place all four files under:
 ```
-robot_vision_demo/models/
+test_person_following/models/
+```
+## 1) Chuẩn bị thư viện & mô hình
+
+### Thư viện Python cần có
+```bash
+pip install opencv-python onnxruntime insightface numpy scikit-learn joblib tf2onnx tensorflow
+# (server không cần UI): pip install opencv-python-headless
+# Nếu dùng Orange Pi, vẫn để CPUExecutionProvider (ONNX Runtime CPU).
 ```
 
-## 2) Enroll the admin face
+> *InsightFace dùng cho phần khuôn mặt (detector + embedding). ONNX Runtime dùng cho MobileNetV2 (body).*
 
-Run enrollment (collects about 40 samples of your face — largest detected face in view). Look at the camera and move slightly for variation.
+### Person detector (MobileNet-SSD, Caffe)
+Đặt file trong thư mục `models/` (cùng cấp `main_v2.py`):
+- `models/MobileNetSSD_deploy.prototxt`
+- `models/MobileNetSSD_deploy.caffemodel`
+
+Nếu chưa có, bạn có thể tìm bộ *MobileNetSSD_deploy* phổ biến trên GitHub / OpenCV Zoo.
+
+### MobileNetV2 (body) dạng ONNX
+Tạo file `mb2_gap.onnx` bằng đoạn code ở phần *Tóm tắt chạy nhanh* phía trên.
+- Input: **(1,224,224,3)** NHWC, float32, chuẩn hóa theo Keras: `x/127.5 - 1.0`
+- Output: vector 1280-D (GAP). Code sẽ ghép thêm HSV-hist (48-D) ⇒ 1328-D.
+
+> **Chú ý**: Convert ONNX chỉ cần làm **một lần** (trừ khi bạn muốn thay model).
+
+---
+
+## 2) Enroll dữ liệu (tạo template lưu trong thư mục `data/`)
+
+Chạy:
+```bash
+python main_v2.py --enroll --label admin
+```
+- Nhấn **`b`** để thêm mẫu **body-only** (lấy người lớn nhất khung).
+- Nhấn **`q`** để kết thúc.
+- Sau khi enroll, thư mục `data/` sẽ có:
+  - `face_templates.npy`, `face_centroid.npy` (bắt buộc)
+  - `body_pca.pkl`, `body_cls_knn.pkl`, `body_mean.npy`, `body_admin_centroid.npy` (nếu thu đủ mẫu body)
+
+> Khuyến nghị thu **≥ 40–60** mẫu face ở nhiều góc/ánh sáng để ổn định.
+
+---
+
+## 3) Chạy nhận dạng
 
 ```bash
-python main.py --enroll --label admin
+python main_v2.py
+```
+- Mặc định camera `--cam 0` trong code. Nếu muốn dùng camera khác, sửa biến `CAM_INDEX` trong phần **CONFIG** của file `main_v2.py`.
+
+---
+
+## 4) Chỉnh thông số trực tiếp trong code (không cần `--`)
+
+Mở `main_v2.py`, ở phần **CONFIG** đầu file, bạn có thể chỉnh các biến sau:
+
+```python
+# Camera
+CAM_INDEX      = 0
+
+# File ONNX MobileNetV2 (body)
+MB2_ONNX_PATH  = "mb2_gap.onnx"
+
+# Temporal memory hyperparams
+EMA_ALPHA       = 0.7
+CONFIRM_FRAMES  = 5
+MARGIN_DELTA    = 0.06
+PERSIST_FRAMES  = 10
+IOU_STICKY      = 0.35
+
+# Ngưỡng/siêu tham số nhận dạng
+ACCEPT_FACE     = 0.26   # ngưỡng chấp nhận face (cosine mix)
+ACCEPT_BODY     = 0.26   # ngưỡng chấp nhận body
+PERSON_CONF     = 0.4    # ngưỡng detector người (SSD)
+PCA_DIM_BODY    = 192    # số chiều PCA cho body
+
+# --- Các tham số tối ưu cố định trong code ---
+USE_ROI         = True   # ưu tiên detect face theo ROI quanh person_box
+SKIP_K          = 3      # số khung bỏ qua giữa các lần detect (skip-frames)
+ROI_EXPAND      = 0.30   # biên nới ROI (0.30 ≈ 1.3x)
+FACE_ON         = 2      # số khung liên tiếp có mặt để chuyển sang MODE_FACE_DOMINANT
+FACE_OFF        = 4      # số khung liên tiếp mất mặt để về MODE_BODY_DOMINANT
+
+# Hiển thị HUD
+NO_VIS          = False  # True để tắt rectangle/putText/imshow (FPS cao hơn)
+
+# FaceAnalysis pack & det_size
+FACE_PACK_NAME  = 'buffalo_l'     # có thể dùng 'buffalo_sc' để nhẹ hơn
+FACE_DET_SIZE   = (384, 384)      # 320x320 nhanh hơn nếu mặt không quá nhỏ
 ```
 
-This creates:
-- `data/face_pca.pkl` — PCA projection (whitened)
-- `data/face_cls_knn.pkl` — a small KNN classifier
-- `data/face_mean.npy` — mean vector
+### Giải thích nhanh từng thông số
 
-## 3) Run the real-time demo
+- **USE_ROI**: Khi đã có `person_box` đang bám, chỉ detect face trong `ROI = expand(person_box, ROI_EXPAND)` ⇒ giảm pixel phải xử lý ⇒ tăng FPS.
+- **SKIP_K**: Mỗi `K` khung mới detect lại; các khung giữa dùng **tracker** hình học để bám người ⇒ giảm tần suất gọi các mô-đun nặng.
+- **ROI_EXPAND**: Mức nới ROI quanh `person_box`. 0.30 ≈ 1.3× kích thước người (đủ để không mất mặt khi người hơi chuyển động).
+- **FACE_ON / FACE_OFF**: Hysteresis cho **gating**:
+  - Chuyển sang **FACE_DOMINANT** sau khi thấy mặt liên tiếp `FACE_ON` khung.
+  - Chuyển về **BODY_DOMINANT** sau khi **không thấy** mặt `FACE_OFF` khung.
+- **NO_VIS**: Tắt vẽ giúp FPS tăng, đặc biệt trên SBC (Orange Pi).
+- **FACE_PACK_NAME / FACE_DET_SIZE**:
+  - `buffalo_sc` nhẹ hơn `buffalo_l` (đề xuất nếu bạn muốn thêm FPS).
+  - `(320,320)` giúp rớt chi phí detect ~20–35% so với `(384,384)` (nếu mặt đủ lớn).
 
-```bash
-python main.py
+> **Mẹo**: Với Orange Pi 5 Plus, ONNX Runtime nên dùng **CPUExecutionProvider**, giữ thread hợp lý (mặc định code đã OK).
+
+---
+
+## 5) Cơ chế gating & “k=1 khi ADMIN”
+
+- **Gating** hai mode:
+  - `MODE_FACE_DOMINANT`: chỉ xử lý **Face**; **không** tính Body ⇒ tiết kiệm.
+  - `MODE_BODY_DOMINANT`: chỉ xử lý **Body**; **không** gọi Face ⇒ tiết kiệm.
+- **Streak + hysteresis** (`FACE_ON`, `FACE_OFF`) tránh nhấp nháy mode khi mặt chập chờn.
+- **k=1 khi ADMIN**: Sau khi hệ thống đã xác nhận ADMIN (ổn định trong vài khung), chỉ tính **embedding 1 khuôn mặt** gắn với ADMIN (ưu tiên IOU cao nhất với `admin_track["face_box"]`). Khi đông người, điều này tiết kiệm đáng kể so với tính 2–5 mặt mỗi khung.
+
+Kết quả: trung bình **FPS tăng rõ** mà tính ổn định vẫn đảm bảo.
+
+---
+
+## 6) Quy trình hoạt động khuyến nghị
+
+1. **Enroll** đủ mẫu face/body (đa góc, nhiều ánh sáng).
+2. **Chạy** với `USE_ROI=True`, `SKIP_K=3`, `ROI_EXPAND=0.30`.
+3. Xem FPS; nếu còn nặng:
+   - Giảm `FACE_DET_SIZE` xuống `(320,320)`.
+   - Chuyển `FACE_PACK_NAME='buffalo_sc'`.
+   - Đặt `NO_VIS=True`.
+4. (Tùy chọn) Bật “gating” mạnh hơn: tăng `FACE_OFF` nếu hay mất mặt chập chờn.
+
+---
+
+## 7) Troubleshooting
+
+- **`FileNotFoundError: ONNX model not found: mb2_gap.onnx`**  
+  → Bạn chưa convert hoặc đặt sai đường dẫn. Sửa `MB2_ONNX_PATH` trong CONFIG hoặc convert lại.
+
+- **Thiếu MobileNet-SSD (Caffe)**  
+  → Đảm bảo có `models/MobileNetSSD_deploy.prototxt` và `models/MobileNetSSD_deploy.caffemodel` đúng đường dẫn.
+
+- **`AttributeError: cv2.TrackerCSRT_create`**  
+  → OpenCV bản không có *contrib*. Code đã *fallback* (không crash). Nếu muốn tracker, cài `opencv-contrib-python`.  
+
+- **FPS vẫn thấp**  
+  → Tắt HUD (`NO_VIS=True`), giảm `FACE_DET_SIZE`, dùng `buffalo_sc`, tăng `SKIP_K`, hoặc dùng gating. Trên SBC, tránh chạy quá nhiều luồng nền.
+
+---
+
+## 8) Cấu trúc thư mục chuẩn
+
+```
+project/
+├─ main_v2.py
+├─ mb2_gap.onnx
+├─ models/
+│  ├─ MobileNetSSD_deploy.prototxt
+│  └─ MobileNetSSD_deploy.caffemodel
+└─ data/
+   ├─ face_templates.npy
+   ├─ face_centroid.npy
+   ├─ body_pca.pkl
+   ├─ body_cls_knn.pkl
+   ├─ body_mean.npy
+   └─ body_admin_centroid.npy
 ```
 
-Keys: `q` quit, `h` help in console.
+---
 
-Overlays show:
-- **Face**: green box + auth status `ADMIN (conf)` if recognized (distance-based acceptance), otherwise `UNKNOWN`.
-- **Person**: orange boxes for `person` detections (MobileNet-SSD).
-- **Hand**: landmarks and a simple **gesture** label; the script prints a stabilized gesture in the overlay.
+## 9) Gợi ý benchmark nhanh
 
-## 4) How this maps to the paper
+- Bật/ tắt từng tính năng và quan sát FPS (in ra bằng `cv2.getTickFrequency()` hoặc thêm bộ đếm thời gian).
+- Thử các bộ tham số:
+  - **Nhẹ**: `buffalo_sc`, `FACE_DET_SIZE=(320,320)`, `NO_VIS=True`.
+  - **Gating mạnh**: `FACE_ON=2`, `FACE_OFF=6`, `SKIP_K=4`.
+  - **Khung đông người**: “k=1 khi ADMIN” sẽ cho lợi ích lớn.
 
-- **Face Auth**: paper describes **VGG16** + **PCA**. We use VGG16's **fc1** (4096-D) as embedding → **PCA (128-D)** → **KNN** + distance threshold for acceptance.
-- **Person**: paper selected **MobileNet-SSD** for speed and multi-scale. We use the same architecture via OpenCV DNN with COCO/VOC-style weights and keep **class=15 (person)**.
-- **Hand**: paper uses **MediaPipe Hands**; we do the same. We convert landmarks to a simple **gesture** (finger-count heuristic) mapping to the paper's discrete commands.
+---
 
-## 5) Notes & Tips
-
-- This webcam demo **does not use depth**, so **follow/avoid** control is not included — it focuses on **perception** as requested.
-- For face auth, if you get false accepts, increase the acceptance threshold in code (`thresh` in `predict_face_label`), or use more enrollment samples.
-- If you plan to move to the robot later, you can feed person bbox + (eventual) depth into your controller, and map hand gestures to discrete motion commands.
-
-## 6) Troubleshooting
-
-- `FileNotFoundError` for models: make sure the four model files are placed under `robot_vision_demo/models/` exactly as named.
-- Low FPS? Reduce webcam resolution (e.g., 640x480), or set `--fps` when opening capture if your camera supports it.
-- If TensorFlow crashes on CPU AVX issues, try a different TF build or use `tensorflow-cpu` specifically.
-
-——
-Enjoy testing!
+Chúc bạn chạy mượt! Nếu muốn mình tạo sẵn *script benchmark* FPS hoặc *profile* từng khối (face/body/person), mình có thể cung cấp thêm.

@@ -366,7 +366,7 @@ def main():
                         admin_track["face_box"] = best["face_box"]
 
             face_ok = (best["face_conf"] >= args.accept_face)
-            body_ok = (best["body_conf"] >= args.accept_body)
+            body_ok = (best["body_conf"] >= args.accept_body)	
             is_admin = (admin_track["frames_seen"] >= CONFIRM_FRAMES) and (face_ok or body_ok)
 
         # Draw
